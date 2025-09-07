@@ -259,8 +259,18 @@ static int32_t ledBlinker()
 
     ledBlink.set(ledOn);
 
+#ifdef FULLCHARGE
+    // Blink at 0.5Hz only if charging AND latched full
+    if (powerStatus->getIsCharging() && powerStatus->getIsLatchedFull()) {
+        return 1000;
+    }
+
+    // Otherwise: heartbeat pulse
+    return (ledOn ? 1 : 1000);
+#else
     // have a very sparse duty cycle of LED being on, unless charging, then blink 0.5Hz square wave rate to indicate that
     return powerStatus->getIsCharging() ? 1000 : (ledOn ? 1 : 1000);
+#endif
 }
 
 uint32_t timeLastPowered = 0;

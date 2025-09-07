@@ -58,6 +58,17 @@ class PowerStatus : public Status
 
     int getBatteryVoltageMv() const { return batteryVoltageMv; }
 
+    /// Whether the battery percent is latched full while charging
+    bool getIsLatchedFull() const
+    {
+#ifdef FULLCHARGE
+        // Only latch once the cell voltage has reached 4.20 V or higher
+        return getIsCharging() && (batteryVoltageMv >= 4200);
+#else
+        // Fallback: latch at 100% based on percent
+        return getIsCharging() && (batteryChargePercent >= 100);
+#endif
+    }
     /**
      * Note: for boards with battery pin or PMU, 0% battery means 'unknown/this board doesn't have a battery installed'
      */

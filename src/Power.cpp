@@ -266,19 +266,69 @@ class AnalogBatteryLevel : public HasBatteryLevel
          */
         float battery_SOC = 0.0;
         uint16_t voltage = v / NUM_CELLS; // single cell voltage (average)
+
+// Decide what "full" voltage is
+#ifdef FULLCHARGE
+        const float baseFullMv = FULLCHARGE * 1000.0f;             // e.g. 4150 mV
+        const float topChargeMv = 4.20f * 1000.0f;                 // stretch ceiling while charging
+        const float chargingVolt = (topChargeMv + 10) * NUM_CELLS; // blink only after ~4.20 V
+#else
+        const float baseFullMv = OCV[0];      // default 4200 mV top
+        const float topChargeMv = baseFullMv; // no stretch
+        const float chargingVolt = (OCV[0] + 10) * NUM_CELLS;
+#endif
+
+        // Default: use the board’s normal full voltage
+        float effectiveFullMv = baseFullMv;
+
+        // Local lightweight charging check (avoids recursion)
+        bool chargingNow = false;
+#ifdef EXT_CHRG_DETECT
+        chargingNow = (digitalRead(EXT_CHRG_DETECT) == ext_chrg_detect_value);
+#else
+        chargingNow = isVbusIn();
+#endif
+
+        // --- Latch logic to keep 100% until we dip below FULLCHARGE again ---
+        if (latchedFull) {
+            if (v < baseFullMv) {
+                latchedFull = false; // drop below threshold releases latch
+            } else {
+                return 100; // stay clamped at 100%
+            }
+        }
+
+        // If charging, always stretch scale up to 4.20 V
+        if (chargingNow) {
+            effectiveFullMv = topChargeMv;
+        }
+
         for (int i = 0; i < NUM_OCV_POINTS; i++) {
-            if (OCV[i] <= voltage) {
+            // scale the OCV table so its [0] entry matches the *effective* full voltage
+            float scaledOCV = OCV[i] * (effectiveFullMv / OCV[0]);
+
+            if (scaledOCV <= voltage) {
                 if (i == 0) {
                     battery_SOC = 100.0; // 100% full
                 } else {
-                    // interpolate between OCV[i] and OCV[i-1]
-                    battery_SOC = (float)100.0 / (NUM_OCV_POINTS - 1.0) *
-                                  (NUM_OCV_POINTS - 1.0 - i + ((float)voltage - OCV[i]) / (OCV[i - 1] - OCV[i]));
+                    // interpolate between scaledOCV and the previous step
+                    float prevScaled = OCV[i - 1] * (effectiveFullMv / OCV[0]);
+                    battery_SOC = (100.0 / (NUM_OCV_POINTS - 1.0)) *
+                                  (NUM_OCV_POINTS - 1.0 - i + ((float)voltage - scaledOCV) / (prevScaled - scaledOCV));
                 }
                 break;
             }
         }
-        return clamp((int)(battery_SOC), 0, 100);
+
+        int pct = clamp((int)(battery_SOC), 0, 100);
+
+        // If we really hit 100 while charging → latch it
+        if (pct >= 100 && chargingNow) {
+            latchedFull = true;
+            return 100;
+        }
+
+        return pct;
     }
 
     /**
@@ -490,13 +540,20 @@ class AnalogBatteryLevel : public HasBatteryLevel
     }
 
   private:
+    bool latchedFull = false;
     /// If we see a battery voltage higher than physics allows - assume charger is pumping
     /// in power
 
     /// For heltecs with no battery connected, the measured voltage is 2204, so
     // need to be higher than that, in this case is 2500mV (3000-500)
     const uint16_t OCV[NUM_OCV_POINTS] = {OCV_ARRAY};
+
+#ifdef FULLCHARGE
+    const float chargingVolt = (FULLCHARGE * 1000.0f + 10) * NUM_CELLS;
+#else
     const float chargingVolt = (OCV[0] + 10) * NUM_CELLS;
+#endif
+
     const float noBatVolt = (OCV[NUM_OCV_POINTS - 1] - 500) * NUM_CELLS;
     // Start value from minimum voltage for the filter to not start from 0
     // that could trigger some events.
